@@ -1,0 +1,156 @@
+import pyodbc
+import math
+
+"""
+This script calculates and updates the measurement uncertainty for calibration measurements in a Sybase database.
+
+Synopsis:
+- The script connects to a Sybase database using the pyodbc library.
+- It fetches the MTAG (instrument tag) for a given ID number from the inventory table.
+- It then retrieves the corresponding CTAG (calibration tag) from the Calibration table.
+- Using the CTAG, the script fetches all relevant rows from the CalResults table.
+- For each row, the script calculates the deviation between the unit under test (UUT) measurement and the calibration standard measurement.
+- The script calculates the combined standard uncertainty using the provided Best Measurement Capability (BMC) value and the resolution of the UUT.
+- The combined standard uncertainty is rounded to two significant figures and formatted to include a leading zero if the value is between -1 and 1.
+- The script updates the CalResults table with the calculated measurement uncertainty.
+
+Usage:
+1. Ensure you have the pyodbc library installed in your Python environment.
+   You can install it using pip:
+   pip install pyodbc
+
+2. Update the database connection string in the script to match your Sybase DSN, UID, and PWD.
+
+3. Run the script and provide the following inputs when prompted:
+   - ID number: The ID number for which you want to update the measurement uncertainty.
+   - Best Measurement Capability (BMC) value: The BMC value from your scope of accreditation.
+   - Resolution of the device under test: The resolution of the unit under test.
+
+Example:
+$ python update_uncertainty.py
+Enter the ID number: test
+Enter the Best Measurement Capability (BMC) value: 0.05
+Enter the resolution of the device under test: 1.0
+"""
+
+def round_up_to_significant_figures(number, sig_figs):
+    """
+    Round a number up to a specified number of significant figures.
+    
+    Parameters:
+    number (float): The number to round.
+    sig_figs (int): The number of significant figures.
+
+    Returns:
+    float: The rounded number.
+    """
+    if number == 0:
+        return 0
+    else:
+        return round(number, sig_figs - int(math.floor(math.log10(abs(number)))) - 1)
+
+def format_uncertainty(value):
+    """
+    Format the uncertainty value to ensure two significant figures and a leading zero if the value is between -1 and 1.
+    
+    Parameters:
+    value (float): The value to format.
+
+    Returns:
+    str: The formatted value.
+    """
+    if -1 < value < 1 and value != 0:
+        return f"{value:.2g}"
+    return f"{value:.2g}"
+
+def calculate_measurement_uncertainty(bmc, resolution, deviation):
+    """
+    Calculate the combined standard uncertainty.
+
+    Parameters:
+    bmc (float): Best Measurement Capability value.
+    resolution (float): Resolution of the unit under test.
+    deviation (float): Deviation between UUT measurement and calibration standard.
+
+    Returns:
+    str: Combined standard uncertainty formatted with two significant figures and a leading zero if needed.
+    """
+    # Convert resolution to standard uncertainty by dividing by the square root of 3 (assuming a uniform distribution)
+    u_resolution = resolution / math.sqrt(3)
+    
+    # Calculate the combined standard uncertainty
+    u_combined = math.sqrt(bmc**2 + u_resolution**2 + deviation**2)
+    
+    # Round to two significant figures and format
+    u_combined_rounded = round_up_to_significant_figures(u_combined, 2)
+    u_combined_formatted = format_uncertainty(u_combined_rounded)
+    
+    return u_combined_formatted
+
+def update_uncertainty(id_num, bmc, resolution):
+    connection = pyodbc.connect('DSN=mtrack;UID=mt;PWD=pajama40')
+    cursor = connection.cursor()
+    
+    try:
+        # Step 1: Get MTAG from inventory
+        cursor.execute("SELECT MTAG FROM mt.inventory WHERE i4201 = ?", id_num)
+        mtag_row = cursor.fetchone()
+        
+        if mtag_row:
+            mtag = mtag_row[0]
+            print(f"MTAG: {mtag}")
+            # Step 2: Get CTAG from Calibration
+            cursor.execute("SELECT CTAG FROM mt.Calibration WHERE MTAG = ? AND C2339 = 1", mtag)
+            ctag_row = cursor.fetchone()
+            
+            if ctag_row:
+                ctag = ctag_row[0]
+                print(f"CTAG: {ctag}")
+                # Step 3: Get all rows from CalResults for the CTAG in the default order
+                cursor.execute("SELECT C2504, C2508, C2509 FROM mt.CalResults WHERE CTAG = ? ORDER BY C2504", ctag)
+                calresults_rows = cursor.fetchall()
+                
+                if calresults_rows:
+                    for row in calresults_rows:
+                        C2504 = row.C2504
+                        standard_measurement = float(row.C2508)
+                        uut_measurement = float(row.C2509)
+                        
+                        # Calculate deviation
+                        deviation = uut_measurement - standard_measurement
+                        
+                        # Calculate measurement uncertainty
+                        measurement_uncertainty = calculate_measurement_uncertainty(bmc, resolution, deviation)
+                        
+                        print(f"Updating row C2504: {C2504} with uncertainty: {measurement_uncertainty}")
+                        cursor.execute("""
+                            UPDATE mt.CalResults
+                            SET MeasUncertainty = ?
+                            WHERE CTAG = ? AND C2504 = ?
+                        """, measurement_uncertainty, ctag, C2504)
+                        # Print the executed SQL for debugging
+                        print(f"Executed SQL: UPDATE mt.CalResults SET MeasUncertainty = {measurement_uncertainty} WHERE CTAG = {ctag} AND C2504 = {C2504}")
+                        print("Success.")
+                    
+                    connection.commit()
+                    print("Measurement uncertainty updated successfully.")
+                else:
+                    print("No records found in CalResults for the given CTAG.")
+            else:
+                print("No CTAG found for the given MTAG and condition.")
+        else:
+            print("No MTAG found for the given ID number.")
+    
+    except Exception as e:
+        print("Error occurred:", e)
+    finally:
+        cursor.close()
+        connection.close()
+
+# Prompt the user for input
+id_num = input("Enter the ID number: ")
+bmc = float(input("Enter the Best Measurement Capability (BMC) value: "))
+resolution = float(input("Enter the resolution of the device under test: "))
+
+# Call the function with the provided input
+update_uncertainty(id_num, bmc, resolution)
