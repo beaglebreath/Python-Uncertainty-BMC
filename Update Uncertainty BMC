@@ -88,7 +88,7 @@ def calculate_measurement_uncertainty(bmc, resolution, deviation):
     return u_combined_formatted
 
 def update_uncertainty(id_num, bmc, resolution):
-    connection = pyodbc.connect('DSN=mtrack;UID=mt;PWD=pajama40')
+    connection = pyodbc.connect('DSN=*****;UID=*****;PWD=*****')
     cursor = connection.cursor()
     
     try:
